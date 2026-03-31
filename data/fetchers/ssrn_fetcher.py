@@ -15,6 +15,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+import cloudscraper
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -43,16 +44,12 @@ def fetch_ssrn_articles(days_back: int = FETCH_DAYS_BACK) -> tuple[list[Article]
     if cached:
         return _from_cache(cached), True
 
-    contact = os.getenv("CONTACT_EMAIL", "research-digest-bot")
-    headers = {
-        "User-Agent": f"Mozilla/5.0 (academic research aggregator; contact: {contact})",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml",
-    }
-
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     seen_ids: set[str] = set()
     articles: list[Article] = []
+
+    # cloudscraper handles Cloudflare JS challenges that block plain requests
+    session = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
 
     for query in SSRN_QUERIES:
         try:
@@ -63,7 +60,13 @@ def fetch_ssrn_articles(days_back: int = FETCH_DAYS_BACK) -> tuple[list[Article]
                 "order": "desc",
                 "StartDate": cutoff.strftime("%Y-%m-%d"),
             }
-            resp = requests.get(SSRN_SEARCH_URL, params=params, headers=headers, timeout=20)
+            resp = session.get(SSRN_SEARCH_URL, params=params, timeout=30)
+            if resp.status_code == 403:
+                logger.warning(
+                    "SSRN returned 403 for query '%s' — Cloudflare block persists.",
+                    query,
+                )
+                return [], False
             resp.raise_for_status()
             page_articles = _parse_results_page(resp.text, cutoff)
             for a in page_articles:
